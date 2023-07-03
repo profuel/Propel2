@@ -8,7 +8,6 @@
 
 namespace Propel\Runtime\Map;
 
-use Propel\Runtime\Adapter\AdapterInterface;
 use Propel\Runtime\Map\Exception\TableNotFoundException;
 use Propel\Runtime\Propel;
 
@@ -25,39 +24,46 @@ use Propel\Runtime\Propel;
  * @author Hans Lellelid <hans@xmpl.org> (Propel)
  * @author John D. McNally <jmcnally@collab.net> (Torque)
  * @author Daniel Rall <dlr@collab.net> (Torque)
- *
- * @psalm-consistent-constructor (instantiated by class name in StandardServiceContainer without arguments)
- *
- * @psalm-type \Propel\Runtime\Map\MapType = 'tablesByName' | 'tablesByPhpName'
- * @psalm-type \Propel\Runtime\Map\TableMapDump array<\Propel\Runtime\Map\MapType, array<string, class-string<\Propel\Runtime\Map\TableMap>>>
  */
 class DatabaseMap
 {
+    protected bool $loadedTables = false;
+
+    /**
+     * @var array<int, class-string>
+     */
+    protected array $registeredTables = [];
+
+    /**
+     * @var array<string, bool>
+     */
+    protected array $resolvedTableNames = [];
+
     /**
      * Name of the database.
      *
      * @var string
      */
-    protected string $name;
+    protected $name;
 
     /**
      * Tables in the database, using table name as key
      *
-     * @var array<string, \Propel\Runtime\Map\TableMap|class-string<\Propel\Runtime\Map\TableMap>>
+     * @var array<\Propel\Runtime\Map\TableMap|class-string<\Propel\Runtime\Map\TableMap>>
      */
     protected $tables = [];
 
     /**
      * Tables in the database, using table phpName as key
      *
-     * @var array<string, \Propel\Runtime\Map\TableMap|class-string<\Propel\Runtime\Map\TableMap>>
+     * @var array<\Propel\Runtime\Map\TableMap|class-string<\Propel\Runtime\Map\TableMap>>
      */
     protected $tablesByPhpName = [];
 
     /**
      * @param string $name Name of the database.
      */
-    public function __construct(string $name)
+    public function __construct($name)
     {
         $this->name = $name;
     }
@@ -67,7 +73,7 @@ class DatabaseMap
      *
      * @return string The name of the database.
      */
-    public function getName(): string
+    public function getName()
     {
         return $this->name;
     }
@@ -79,7 +85,7 @@ class DatabaseMap
      *
      * @return \Propel\Runtime\Map\TableMap The newly created TableMap.
      */
-    public function addTable(string $tableName): TableMap
+    public function addTable($tableName)
     {
         $this->tables[$tableName] = new TableMap($tableName, $this);
 
@@ -93,7 +99,7 @@ class DatabaseMap
      *
      * @return void
      */
-    public function addTableObject(TableMap $table): void
+    public function addTableObject(TableMap $table)
     {
         $table->setDatabaseMap($this);
 
@@ -126,13 +132,12 @@ class DatabaseMap
     /**
      * Add a new table to the database, using the tablemap class name.
      *
-     * @param class-string<\Propel\Runtime\Map\TableMap> $tableMapClass The name of the table map to add
+     * @param string $tableMapClass The name of the table map to add
      *
      * @return \Propel\Runtime\Map\TableMap The TableMap object
      */
-    public function addTableFromMapClass(string $tableMapClass): TableMap
+    public function addTableFromMapClass($tableMapClass)
     {
-        /** @var \Propel\Runtime\Map\TableMap $table */
         $table = new $tableMapClass();
         $this->addTableObject($table);
 
@@ -140,41 +145,6 @@ class DatabaseMap
     }
 
     /**
-     * Dump table maps. Used during configuration generation.
-     *
-     * @psalm-return \Propel\Runtime\Map\TableMapDump
-     *
-     * @return array<string, array<string, class-string<\Propel\Runtime\Map\TableMap>>> A dump that can be loaded again with {@link DatabaseMap::loadMapsFromDump()}
-     */
-    public function dumpMaps(): array
-    {
-        /**
-         * @psalm-var \Closure( class-string<\Propel\Runtime\Map\TableMap>|\Propel\Runtime\Map\TableMap ): class-string<\Propel\Runtime\Map\TableMap>
-         */
-        $toClassString = fn ($tableMap) => is_string($tableMap) ? $tableMap : get_class($tableMap);
-
-        return [
-            'tablesByName' => array_map($toClassString, $this->tables),
-            'tablesByPhpName' => array_map($toClassString, $this->tablesByPhpName),
-        ];
-    }
-
-    /**
-     * Load internal table maps from dump. Used during Propel initialization.
-     *
-     * @psalm-param \Propel\Runtime\Map\TableMapDump $mapsDump
-     *
-     * @param array<string, array<string, class-string<\Propel\Runtime\Map\TableMap>>> $mapsDump Table map dump as created by {@link DatabaseMap::dumpMaps()}
-     *
-     * @return void
-     */
-    public function loadMapsFromDump(array $mapsDump): void
-    {
-        $this->tables = $mapsDump['tablesByName'];
-        $this->tablesByPhpName = $mapsDump['tablesByPhpName'];
-    }
-
-    /**
      * Registers a table map classes (by qualified name) as table belonging
      * to this database.
      *
@@ -183,35 +153,16 @@ class DatabaseMap
      * {@link DatabaseMap::getTableByPhpName()}, or
      * {@link DatabaseMap::getTables()}
      *
-     * @param class-string<\Propel\Runtime\Map\TableMap> $tableMapClass The name of the table map to add
+     * @param class-string<\Propel\Runtime\Map\TableMap>|string $tableMapClass The name of the table map to add
      *
      * @return void
      */
     public function registerTableMapClass(string $tableMapClass): void
     {
         $tableName = $tableMapClass::TABLE_NAME;
-        $tablePhpName = $tableMapClass::TABLE_PHP_NAME;
-        $this->registerTableMapClassByName($tableName, $tablePhpName, $tableMapClass);
-    }
-
-    /**
-     * Registers a table map classes (by qualified name) as table belonging
-     * to this database.
-     *
-     * Classes added like this will only be instantiated when accessed
-     * through {@link DatabaseMap::getTable()},
-     * {@link DatabaseMap::getTableByPhpName()}, or
-     * {@link DatabaseMap::getTables()}
-     *
-     * @param string $tableName Internal name of the table, i.e. 'bookstore_schemas.book'
-     * @param string|null $tablePhpName PHP name of the table, i.e. 'Book'
-     * @param class-string<\Propel\Runtime\Map\TableMap> $tableMapClass The name of the table map to add
-     *
-     * @return void
-     */
-    public function registerTableMapClassByName(string $tableName, ?string $tablePhpName, string $tableMapClass): void
-    {
         $this->tables[$tableName] = $tableMapClass;
+
+        $tablePhpName = $tableMapClass::TABLE_PHP_NAME;
         $this->addTableByPhpName($tablePhpName, $tableMapClass);
     }
 
@@ -219,13 +170,43 @@ class DatabaseMap
      * Registers a list of table map classes (by qualified name) as table maps
      * belonging to this database.
      *
-     * @param array<class-string<\Propel\Runtime\Map\TableMap>> $tableMapClasses
+     * @param array<class-string> $tableMapClasses
      *
      * @return void
      */
     public function registerTableMapClasses(array $tableMapClasses): void
     {
-        array_map([$this, 'registerTableMapClass'], $tableMapClasses);
+        $this->registeredTables = $tableMapClasses;
+    }
+
+    protected function loadTableMap($name): bool
+    {
+        if ($this->loadedTables) {
+            return true;
+        }
+        if (isset($this->resolvedTableNames[$name])) {
+            return $this->resolvedTableNames[$name];
+        }
+        $className = ucfirst(str_replace('_', '', ucwords($name, '_')));
+        $className .= 'TableMap';
+        $results = array_filter($this->registeredTables, function ($registeredTableName) use ($className) {
+            return str_ends_with($registeredTableName, $className);
+        });
+
+        array_map([$this, 'registerTableMapClass'], $results);
+        $this->resolvedTableNames[$name] = count($results) > 0;
+
+        return $this->resolvedTableNames[$name];
+    }
+
+    protected function loadTableMaps(): void
+    {
+        if ($this->loadedTables) {
+            return;
+        }
+
+        array_map([$this, 'registerTableMapClass'], $this->registeredTables);
+        $this->loadedTables = true;
     }
 
     /**
@@ -235,13 +216,16 @@ class DatabaseMap
      *
      * @return bool True if the database contains the table.
      */
-    public function hasTable(string $name): bool
+    public function hasTable($name)
     {
         if (strpos($name, '.') > 0) {
             $name = substr($name, 0, strpos($name, '.'));
         }
 
-        return isset($this->tables[$name]);
+        if (isset($this->tables[$name])) {
+            return true;
+        }
+        return $this->loadTableMap($name) && isset($this->tables[$name]);
     }
 
     /**
@@ -253,10 +237,16 @@ class DatabaseMap
      *
      * @return \Propel\Runtime\Map\TableMap A TableMap
      */
-    public function getTable(string $name): TableMap
+    public function getTable($name)
     {
         if (!isset($this->tables[$name])) {
-            throw new TableNotFoundException(sprintf('Cannot fetch TableMap for undefined table `%s` in database `%s`.', $name, $this->getName()));
+            $this->loadTableMap($name);
+            if (!isset($this->tables[$name])) {
+                $this->loadTableMaps();
+            }
+            if (!isset($this->tables[$name])) {
+                throw new TableNotFoundException(sprintf('Cannot fetch TableMap for undefined table `%s` in database `%s`.', $name, $this->getName()));
+            }
         }
 
         $tableOrClass = $this->tables[$name];
@@ -267,11 +257,9 @@ class DatabaseMap
     /**
      * Get a TableMap[] of all of the tables in the database.
      *
-     * If tables are registered by class map name, they will be instantiated.
-     *
-     * @return array<\Propel\Runtime\Map\TableMap>
+     * @return \Propel\Runtime\Map\TableMap[]
      */
-    public function getTables(): array
+    public function getTables()
     {
         foreach ($this->tables as $tableOrClassMap) {
             if (!is_string($tableOrClassMap)) {
@@ -292,7 +280,7 @@ class DatabaseMap
      *
      * @return \Propel\Runtime\Map\ColumnMap A TableMap
      */
-    public function getColumn(string $qualifiedColumnName): ColumnMap
+    public function getColumn($qualifiedColumnName)
     {
         [$tableName, $columnName] = explode('.', $qualifiedColumnName);
 
@@ -302,56 +290,43 @@ class DatabaseMap
     /**
      * @param string $phpName
      *
+     * @throws \Propel\Runtime\Map\Exception\TableNotFoundException
+     *
      * @return \Propel\Runtime\Map\TableMap
      */
-    public function getTableByPhpName(string $phpName): TableMap
+    public function getTableByPhpName($phpName)
     {
         if ($phpName[0] !== '\\') {
             $phpName = '\\' . $phpName;
         }
+        if (isset($this->tablesByPhpName[$phpName])) {
+            $tableOrClassMap = $this->tablesByPhpName[$phpName];
 
-        /** @var \Propel\Runtime\Map\TableMap|class-string<\Propel\Runtime\Map\TableMap> $tableMapOrTableMapClassName */
-        $tableMapOrTableMapClassName = (isset($this->tablesByPhpName[$phpName]))
-            ? $this->tablesByPhpName[$phpName]
-            : $this->determineTableMapClassNameByPhpName($phpName);
-
-        if (is_string($tableMapOrTableMapClassName)) {
-            return $this->addTableFromMapClass($tableMapOrTableMapClassName);
+            return is_string($tableOrClassMap) ? $this->addTableFromMapClass($tableOrClassMap) : $tableOrClassMap;
         }
 
-        return $tableMapOrTableMapClassName;
-    }
+        if (class_exists($tmClass = $phpName . 'TableMap')) {
+            $this->addTableFromMapClass($tmClass);
 
-    /**
-     * @param string $phpName
-     *
-     * @throws \Propel\Runtime\Map\Exception\TableNotFoundException
-     *
-     * @return string
-     */
-    protected function determineTableMapClassNameByPhpName(string $phpName): string
-    {
-        foreach ($this->buildTableMapClassNamesByPhpName($phpName) as $tableMapClassName) {
-            if (class_exists($tableMapClassName)) {
-                return $tableMapClassName;
+            return $this->tablesByPhpName[$phpName];
+        }
+
+        if (
+            class_exists($tmClass = substr_replace($phpName, '\\Map\\', (int)strrpos($phpName, '\\'), 1) . 'TableMap')
+            || class_exists($tmClass = '\\Map\\' . $phpName . 'TableMap')
+        ) {
+            $this->addTableFromMapClass($tmClass);
+
+            if (isset($this->tablesByPhpName[$phpName])) {
+                return $this->tablesByPhpName[$phpName];
+            }
+
+            if (isset($this->tablesByPhpName[$phpName])) {
+                return $this->tablesByPhpName[$phpName];
             }
         }
 
         throw new TableNotFoundException(sprintf('Cannot fetch TableMap for undefined table phpName: %s in database %s.', $phpName, $this->getName()));
-    }
-
-    /**
-     * @param string $phpName
-     *
-     * @return list<string>
-     */
-    protected function buildTableMapClassNamesByPhpName(string $phpName): array
-    {
-        return [
-            $phpName . 'TableMap',
-            substr_replace($phpName, '\\Map\\', (int)strrpos($phpName, '\\'), 1) . 'TableMap',
-            '\\Map\\' . $phpName . 'TableMap',
-        ];
     }
 
     /**
@@ -361,7 +336,7 @@ class DatabaseMap
      *
      * @return \Propel\Runtime\Adapter\AdapterInterface
      */
-    public function getAbstractAdapter(): AdapterInterface
+    public function getAbstractAdapter()
     {
         return Propel::getServiceContainer()->getAdapter($this->name);
     }
